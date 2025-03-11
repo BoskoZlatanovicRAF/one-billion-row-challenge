@@ -1,0 +1,245 @@
+VEZBE 1 - 11.2.2025
+
+
+------------------------------------------------------------------------
+PROCES
+
+- Proces je pokrenut program
+- Jedan proces ima vise aktivnih niti
+------------------------------------------------------------------------
+NITI
+
+- Nit predstavlja tok izvrsavanja
+- Niti unutar procesa dele memoriju tog procesa
+
+- nit se izvrsava -> stanje running ; 
+- nit spremna za izvrsavanje -> stanje runnable
+
+- u javi main main metoda ima svoju nit
+
+- pravljenje niti u Javi:
+	1) nasledjivanje klase Thread 
+		- override metode run
+		- i mainu pokrecemo tu nit sa .start() metodotom
+	2) implementira interface Runnable
+		- override metode run
+		
+- Thread.currentThread().getName() -> dobijanje ime threada 
+- join -> firstThread.join -> hocu da trenutna nit (main nit) ceka dokle god firstThread nije gotov
+- Thread.sleep -> poziva se uvek nad trenutnom niti 
+
+
+- volatile -> izbegavamo kesiranje, sa ovom kljucnom reci obezbedjujemo citanje i pisanje direktno u glavnu memoriju
+	* kada nit npr setuje neki flag u svom locku, postoji sansa da drugi nit to ne vidi jer je vrednost flaga kesirana, volatile to resava
+	* stavljamo ovu rec kad je promljeva DELJIVA
+
+------------------------------------------------------------------------
+PROBLEMI KONKURENTNOSTI:
+
+1) Race condition (Stanje trke) -> increment i decrement primer 
+	- Resenje: kod mora da se izvrsi u celosti -> medjusubno iskljucivanje -> mutex
+		- kriticna sekcija (KS) -> nit je pod lockom i unlockom -> ovaj deo koda NIJE atomican vec samo obezbedjuje da druga nit ne sme da udje
+		- takodje bitno je da KS zauzima sto manji deo koda zbog optimizacije
+		
+2) DEADLOCK -> jedna nit ceka drugu, druga ceka prvu i medjusobno su zakljucane
+	- Resenje: VICTIM mutex (pesimistican) -> "zrtva mutex" 
+		primer sa autobusom: dva coveka su na redu da udju u autobus, jedan bude "zrtva" i pusti ovog da prvi udje
+		- problem sa VICTIM mutexima je sto jedna nit se nikada nece zavrsiti jer ce ostati sama da ceka (nit A gotova skroz, B je victim i ceka - zauvek)
+		  (paralela sa busem: covek koji propusti sve - ko ce da propusti njega ?)
+		  
+	PETERSONOV algoritam -> resava VICTIM problem (deadlock) tako sto ubacuje flag za drugu nit
+		- garantuje da mi kao zartva necemo da cekamo jer je flag druge niti nije postavljen
+	
+	
+	MULTITHREAD MUTEX:
+	
+	FILTER MUTEX -> svaka nit koja dodje na nivo, ona je zrtva na tom nivou
+		- pravilo: nit na trenutnom nivou ceka dokle god je ona zrtva na tom nivou, dokle god postoji neka nit na trenuntnom ili buducem nivou
+		- trivijalan slucaj: jedna nit koja se nikad ne prekine i radi do kraja 
+		- najgori slucaj: posle svaki operacije se smeni nit
+	implementacija: 
+		- levels[] -> broj nivoa je broj niti, nivo je id niti, na pocetku je -1 -> to je nivo niti koji nije u KS (sa slike gornji nivo u oblaku)
+		private volatile int[] levels -> volatile se odnosi na niz a ne na elemente niza, dakle vrednosti unutar niza se kesiraju
+			ovaj problem se resava tako sto nakon promene elementa u nizu npr (levels[getId()] = L), odradimo 'levels = levels' -> upisuje u memoriju
+
+
+------------------------------------------------------------------------		
+VEZBE 2 - 18.2.2025
+
+- Daemon niti:
+daemon flag -> nit nije vezana nuzno za izvrsavanje programa, main ne ceka da se nit zavrsi
+
+lock i unlock operacije -> u javi 'synchronized' -> mnogo skuplje operacije od atomicnih (AtomicInteger)
+poenta: gde god moze treba izbeci lock i unlock i raditi sa atomicnim operacijama
+
+AtomicInteger klasa ima metode:
+	1) incrementAndGet()
+	2) getAndIncrement()
+	3) get()
+
+CAS (Compare and set):
+	- da bismo sprecili da druga nit uskace u operacije koristimo CAS pristup koji ima 3 strvari : [counter value, expected, new value]
+	  kada su counter value i expected iste, to je dobro i to znaci da druga nit nije umesana 
+	- glavna uloga cas-a: samo jedna nit sme da smanji vrednost brojaca
+	
+Java synchronized:
+	- mozemo imati ugnjezdene synchronized blokove
+	- osobina synchronized-a je da je re-entered, sto znaci da sa jednim LOCK objektom mozemo da ulazimo u bilo koliko synchronized kriticnih sekcija
+	- objekat sa kojim zakljucivamo mora biti final -> bitno je da se nemamo izmene nad njim
+	- metode takodje mogu biti synchronized -> this (objekat klase) se koristi kao kljuc
+	- stvari koje se koriste samo u 'synchronized' nije potrebno da budu volatile, posto nam je to vec obezbedjeno
+	
+Java monitor - wait/notify:
+	- wait metoda se poziva nad LOCK objektom i prakticno stavlja nit u Waiting stanje (nit spava)
+	- notify metoda OBAVESTAVA drugu da se 'probudi' (umesto Waiting stanja ode u Runnable) -> ove promene stanja se desavaju preko Schedulera
+	- ako imamo vise niti koje spavaju (Waiting stanje), postoji notifyAll() koje sve niti prebacuju u Runnable stanje
+	- uglavnom koristimo notifyAll() jer ta metoda budi sve niti dok notify() budi random nit i ne znamo koju, a najcesce imamo vise od 2 niti u sistemu
+	
+	Problem spontanog budjenja (Spurious Wakeup): 
+	- dok je nit u Waiting stanju se budi sama od sebe, bez notify
+	- zbog toga imamo while petlju -> ako se probudi nit spontano da moze ponovo da ode u wait stanje
+	
+Java "thread safe" kolekcije:
+	- Collections.synchronizedX() -> ovo X menja List, Map, Set... (sve Collections-e)
+		- problem sa ovim -> ConcurerentModificationException -> iteriramo kroz listu i tokom iteracije broj elemenata u listi se promeni, java ne zna sta da radi
+		- od Jave 5 ovo je reseno sa konkurentnim kolekcijama -> CopyOnWriteArrayList -> lista se kopira prilikom svake modifikacije
+		  takodje imamo ConcurrentHashMap i BlockingHashMap (DOMACI) -> mladen je rekao da sami istrazimo 
+	
+	- "work stealing" -> neka nit brzo zavrsi svoj posao, pomaze drugoj niti tako sto joj krade sa kraja ConcurrentLinkedDeque te poslove
+	
+	
+------------------------------------------------------------------------		
+VEZBE 3 - 25.2.2025
+
+
+	
+Interface Future (Kao Promise u js):
+	1) Kreira se FutureTask
+		- pokrece se na dva nacina: ili trenutni thread ili novi thread
+	2) Executor sistem -> Thread pool
+	
+Interface Callable
+	- slicno kao Runnable, s tim sto ne vraca nista a Callable vraca rezultat rada niti
+	- Future vraca rezultat koristeci Callable
+	- metoda call
+	
+Memoizacija:
+	- hash mapa se ponasa kao cache, ideja je da za brojeve koji su vec sracunati pamtimo njihove 'faktore' (primer za Faktorizaciju)
+	1) Memoizacija konkurentno -> faktorizacija se stavlja pod synchronized (SHM Factorizer)
+		- rezultat je rad kao single thread samo sa kesiranjem
+	2) Memoizacija konkurentnije -> bolje resenje, koristimo ConcurrentHashMap (CHM Factorizer)
+		- resavamo problem nekonzistentnih podataka 
+		
+Fora sa ConcurrentHashMap za DOMACI:
+	- postoji sansa da kad neka nit racuna faktore za broj da se prekine i ne odredi .put u mapu, i onda dodje druga nit i ponovo racuna za taj 
+	  isti broj -> dakle gubimo na vremenu jer se isti broj racuna 2 puta
+	- resenje: Future List BigInteger -> pre nego sto krene da se racuna, ubaci buduci rezultat u taj cache
+	  tako da neki thread moze da vidi buduci future i da ga ne racuna
+	  
+	- ovo je resenje je 'early put' - dakle rano dodavanje da druga nit moze da vidi da je podatak zauzet, ALI i dalje moze da se desi
+	  da 2 niti u isto vreme budu na ranom dodavanju, odnosno da ubacivanje FutureTaska u cache osiguramo da pristupa jedna nit:
+	  resenje: pre startovanja futureTaska, dodajemo cache.putIfAbsent() -> proveri da li na mestu 'broja' postoji nesto ako ne postoji ubaci futureTask
+			   prva nit koja to pozove ce imati vrednost null od te metode i ona moze da startuje futureTask
+	  
+	
+Thread pool:	
+	- mesto gde imamo vise niti
+	- idealni za "embarrassingly parallel" zadatke -> zadaci koji ne zavise jedni od drugih
+	
+	metode (kako dajemo posao thread poolu): 
+		- execute() -> asinhrono radi, nema povratnu vrednost
+		- submit() -> asinhrono radi, vraca Future objekat kao buducu vrednost
+		- invoke() -> blokira trenutnu nit, izvrsava posao i vraca rez
+		- invokeAll() -> isto, samo izvrsava kolekciju poslova
+	
+	ExecutorService:
+		- mora da se gasi sa metodom shutdown()
+	Wrapper za ExecutorService -> ExecutorCompletionServic -> ima blokirajuci red (BlockingQueue) nad kojim mozemo da pozivamo take() koji vraca Future kada se neki posao zavrsi
+		- ovde nema redosleda vec cim se posao zavrsi on ga take-uje.
+	
+	Executor se ne bavi podelom posla:
+		Podela posla:	
+			Fork:
+				- kreira se nova nit koja radi manju celinu koju joj damo
+			Join:
+				- cekamo da se neki posao zavrsi
+			
+			ForkJoinTaskovi -> apstraktna klasa koja predstavlja jedan posao. Analogna je Callable-u.
+			RecursiveTask -> definisemo tip povratne vrednosti (isto kao Callable), imamo metodu compute
+				- compute metoda: proverava da li je posao dovoljno mali da moze da ga uradi ona, ako ne moze deli i kombinuje
+				
+	
+		
+Kako radimo debugging:
+	List<Future<Integer>> doneFutures = new ArrayList<>();
+	sout(doneFutures.get(i).get()) -> sa prvim getom dobijamo future integer iz liste, i sa drugim getom dobijamo integer, mora try-catch
+	
+	
+------------------------------------------------------------------------		
+VEZBE 4 - 4.3.2025
+
+- ne koristiti sleep i interrupt vec wait i notifyAll
+- pronalazak random brojeva u konkurentnom okruzenju: ThreadLocalRandom.current().nextInt()
+
+
+Gasenje niti koja radi neki posao beskonacno dugo:
+	1) Prvi nacin:	
+		- posebna promenljiva koja sluzi kao uslov petlje koju obara eksterna nit -> mora biti VOLATILE
+	2) Drugi nacin:
+		- koriscenje thread.interrupt() -> nije preporucljivo
+	
+
+Blokirajuce kolekcije (Kako da se izadje ako je neka nit blokirana nad blokirajucom kolekcijom):
+	- "poison pill" metod -> u red se ubacuje stavka koju consumer prepoznaje kao signal da treba da se zavrsi (punimo red otrovima (PP))
+	  Consumeri gledaju da li je posao u redu otrovan, ako jeste prekidaju se
+	  
+DEADLOCK -> jedna nit ceka drugu da bi nastavila a druga ceka prvu
+	- najcesce se desava kada smo u jednom synchronized bloku i hocemo iz njega da pristupimo drugom synchronized bloku
+	  a iz tog drugog hocemo da pristupimo prvom, i onda obe niti drze svoje kljuc i niko ne moze da progresuje
+	- !!! izbegavati pozive iz jednog synchronized bloka u drugi
+
+Imutabilni objekti:
+	- svi atributi su final, sto znaci da ne moze da im se promeni stanje nakon konstruisanja
+	- fora za imutabilnost je najobicnija dodela ('='), time obezbedjujemo da se novi rezultat ili desio u potpunosti ili nije (primer sa 3 palindroma)
+	-
+
+GuiThreads:
+	
+
+------------------------------------------------------------------------
+DOMACI:
+
+- Treba voditi racuna da ne radi vise niti sa jednim fajlom u istom trenutku
+- nit koja cita komande nikad ne sme biti blokirana
+
+- ideja je da nam program radi kad pustimo 15 poslova odjednom
+
+- nema stampanja startTrace-a kad dodje do greske
+
+1.1 Nit za monitoring direktorijuma:
+	- u mainu se pokrene thread za pracenje fajlova i stoji ziv dok ga ne ubijemo
+	- nit prati direktorijum i promene
+	- promena moze biti:
+		1) izmena fajla
+		2) brisanje ili dodavanje necega u fajl
+		3) brisanje fajla
+		4) dodavanje novog fajla u taj direktorijum
+	- za svaku promenu mora da se azurira interna mapa (in-memory)
+	- ako se desi promena, treba da pretrazimo SVE fajlove iz direktorijuma
+	
+	
+1.2 Obrada fajlova i ažuriranje in-memory mape
+	- svaki fajl u direktorijumu treba da bude jedan posao
+	- 1 fajl -> 1 nit u thread poolu
+	- nit koja skenira u direktorijumu promene ->  ubacuje u blocking queue poslove <- imamo posebnu nit koja te poslove razdeljuje 
+	ta druga nit treba da submituje poslove nekom thread poolu
+	- imamo 3 fajla u direktorijumu, to su 3 posla, a za 4 niti u thread poolu -> 4 posla su aktivna a jedan je pending
+	
+	- poenta je da imamo jedan thread pool koji obradjuje te fajlove po pravilu jedna nit jedan fajl
+	
+1.3 CLI nit i obrada komandi
+	- nit cita komande sa konzole, ona nikad ne sme biti blokirana
+
+1.4 Periodican izvestaj
+	- nit za periodican izvestaj sluzi da na svaki minut exportuje in-memory mapu u CSV fajl
+	
