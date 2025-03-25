@@ -1,7 +1,6 @@
 package main.service;
 
 import main.config.AppConfig;
-import main.data.StationData;
 import main.utils.FileUtils;
 
 import java.io.*;
@@ -24,15 +23,74 @@ public class ScanService {
     public void executeScan(double min, double max, char targetLetter, String outputFile, String jobName) {
         Future<?> job = executorService.submit(() -> {
             try {
-                scanFilesForTemperature(min, max, targetLetter, outputFile);
+                processAllFiles(min, max, targetLetter, outputFile);
                 System.out.println("Job " + jobName + " completed");
             } catch (Exception e) {
                 System.err.println("Error in job " + jobName + ": " + e.getMessage());
             }
         });
-
         namedJobs.put(jobName, job);
         System.out.println("Job " + jobName + " submitted");
+    }
+
+    private void processAllFiles(double min, double max, char targetLetter, String outputFile) {
+        try (PrintWriter writer = new PrintWriter(new FileWriter(outputFile))) {
+            List<Future<List<String>>> futures = new ArrayList<>();
+
+            try (DirectoryStream<Path> stream = Files.newDirectoryStream(Paths.get(config.getDirectoryPath()),
+                    path -> FileUtils.isValidMeteoFile(path))) {
+                for (Path file : stream) {
+                    futures.add(executorService.submit(() -> processSingleFile(file, min, max, targetLetter)));
+                }
+            }
+
+            // Collect results
+            for (Future<List<String>> future : futures) {
+                List<String> matches = future.get();
+                for (String line : matches) {
+                    writer.println(line);
+                }
+            }
+        } catch (IOException | InterruptedException | ExecutionException e) {
+            System.err.println("Scan failed: " + e.getMessage());
+        }
+    }
+
+    private List<String> processSingleFile(Path file, double min, double max, char targetLetter) {
+        List<String> matches = new ArrayList<>();
+        boolean isCsv = file.toString().endsWith(".csv");
+
+        try (BufferedReader reader = new BufferedReader(new FileReader(file.toFile()), 8 * 1024 * 1024)) {
+            String line;
+            boolean isHeader = isCsv;
+
+            while ((line = reader.readLine()) != null) {
+                if (isHeader) {
+                    isHeader = false;
+                    continue; // Skip CSV header
+                }
+
+                int semicolonPos = line.indexOf(';');
+                if (semicolonPos < 1) continue;
+
+                String station = line.substring(0, semicolonPos).trim();
+                if (station.isEmpty()) continue;
+
+                char firstChar = Character.toLowerCase(station.charAt(0));
+                if (firstChar != targetLetter) continue;
+
+                try {
+                    double temp = Double.parseDouble(line.substring(semicolonPos + 1).trim());
+                    if (temp >= min && temp <= max) {
+                        matches.add(line);
+                    }
+                } catch (NumberFormatException ignored) {}
+            }
+        } catch (IOException e) {
+            System.err.println("Error reading " + file.getFileName());
+        }
+
+        return matches;
     }
 
     public void checkJobStatus(String jobName) {
@@ -79,111 +137,5 @@ public class ScanService {
         } catch (IOException e) {
             System.err.println("Error loading saved jobs: " + e.getMessage());
         }
-    }
-
-    private void scanFilesForTemperature(double min, double max, char targetLetter, String outputFile) {
-        try (PrintWriter writer = new PrintWriter(new FileWriter(outputFile))) {
-            try (DirectoryStream<Path> stream = Files.newDirectoryStream(Paths.get(config.getDirectoryPath()),
-                    path -> FileUtils.isValidMeteoFile(path))) {
-
-                for (Path file : stream) {
-                    String filePath = file.toString();
-
-                    // Skip files in use
-                    if (filesInUse.contains(filePath)) {
-                        continue;
-                    }
-
-                    // Mark file as in use
-                    if (!filesInUse.add(filePath)) {
-                        continue;
-                    }
-
-                    try {
-                        scanSingleFile(file, min, max, targetLetter, writer);
-                    } finally {
-                        filesInUse.remove(filePath);
-                    }
-                }
-            }
-        } catch (IOException e) {
-            System.err.println("Error during scan operation: " + e.getMessage());
-        }
-    }
-
-    private void scanSingleFile(Path file, double min, double max, char targetLetter, PrintWriter writer) throws IOException {
-        long fileSize = Files.size(file);
-        long chunkSize = config.getChunkSize();
-        int numChunks = (int) Math.ceil((double) fileSize / chunkSize);
-
-        List<Future<List<String>>> chunkResults = new ArrayList<>();
-
-        for (int i = 0; i < numChunks; i++) {
-            final long startPosition = i * chunkSize;
-            final long endPosition = Math.min(startPosition + chunkSize, fileSize);
-
-            Future<List<String>> result = executorService.submit(
-                    () -> scanFileChunk(file, startPosition, endPosition, min, max, targetLetter));
-
-            chunkResults.add(result);
-        }
-
-        for (Future<List<String>> future : chunkResults) {
-            try {
-                List<String> matches = future.get();
-                for (String match : matches) {
-                    writer.println(match);
-                }
-            } catch (InterruptedException | ExecutionException e) {
-                System.err.println("Error during chunk scan: " + e.getMessage());
-                Thread.currentThread().interrupt();
-            }
-        }
-    }
-
-    private List<String> scanFileChunk(Path file, long startPosition, long endPosition,
-                                       double min, double max, char targetLetter) {
-        List<String> matches = new ArrayList<>();
-        boolean isCsv = file.toString().toLowerCase().endsWith(".csv");
-
-        try (RandomAccessFile raf = new RandomAccessFile(file.toFile(), "r")) {
-            raf.seek(startPosition);
-
-            // Skip to next line boundary if not at the beginning
-            if (startPosition > 0) {
-                raf.readLine();
-            }
-
-            // Process lines in this chunk until end position
-            String line;
-            while (raf.getFilePointer() < endPosition && (line = raf.readLine()) != null) {
-                // Skip header only if CSV and at beginning of file
-                if (isCsv && startPosition == 0 && raf.getFilePointer() == line.length() + 1) {
-                    continue;
-                }
-
-                // Parse the line
-                int semicolonIndex = line.indexOf(';');
-                if (semicolonIndex > 0 && semicolonIndex < line.length() - 1) {
-                    String stationName = line.substring(0, semicolonIndex).trim();
-                    if (!stationName.isEmpty()) {
-                        try {
-                            double temperature = Double.parseDouble(line.substring(semicolonIndex + 1).trim());
-                            char firstLetter = Character.toLowerCase(stationName.charAt(0));
-
-                            if (firstLetter == targetLetter && temperature >= min && temperature <= max) {
-                                matches.add(line);
-                            }
-                        } catch (NumberFormatException e) {
-                            // Skip invalid temperature readings
-                        }
-                    }
-                }
-            }
-        } catch (IOException e) {
-            System.err.println("Error processing chunk of file " + file.getFileName());
-        }
-
-        return matches;
     }
 }
